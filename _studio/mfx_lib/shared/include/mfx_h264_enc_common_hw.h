@@ -519,6 +519,18 @@ namespace MfxHwH264Encode
 
         void ApplyDefaultsToMvcSeqDesc();
 
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        mfxExtPpsHeader& GetCqmPps()
+        {
+            return m_extCqmPps;
+        }
+
+        const mfxExtPpsHeader& GetCqmPps() const
+        {
+            return m_extCqmPps;
+        }
+#endif
+
     protected:
         void Construct(mfxVideoParam const & par);
 
@@ -526,6 +538,8 @@ namespace MfxHwH264Encode
 
     private:
         mfxExtBuffer *              m_extParam[32];
+        mfxExtBuffer *              m_extParam[35];
+
         // external, documented
         mfxExtCodingOption          m_extOpt;
         mfxExtCodingOption2         m_extOpt2;
@@ -555,6 +569,17 @@ namespace MfxHwH264Encode
 
 #if defined(__MFXBRC_H__)
         mfxExtBRC                   m_extBRC;
+#endif
+
+#if defined(MFX_ENABLE_AVC_CUSTOM_QMATRIX)
+        mfxExtAVCScalingMatrix      m_extQM;
+#endif
+#if defined(MFX_ENABLE_GPU_BASED_SYNC)
+        mfxExtGameStreaming         m_extGameStreaming;
+#endif
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+        mfxExtLplaParam            m_extLowpowerLA;
+        mfxExtPpsHeader            m_extCqmPps;
 #endif
 
 #if defined (MFX_ENABLE_MFE)
@@ -805,6 +830,13 @@ namespace MfxHwH264Encode
         mfxU32          numExtBuf,
         mfxU32          id,
         mfxU32          offset = 0);
+
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+    bool IsLpLookaheadSupported(
+        mfxU16 scenario,
+        mfxU16 lookaheadDepth,
+        mfxU16 rateContrlMethod);
+#endif
 
     struct mfxExtBufferProxy;
     struct mfxExtBufferRefProxy;
@@ -1372,7 +1404,15 @@ namespace MfxHwH264Encode
 
         std::vector<ENCODE_PACKEDHEADER_DATA> const & GetSps() const { return m_packedSps; }
 
-        std::vector<ENCODE_PACKEDHEADER_DATA> const & GetPps() const { return m_packedPps; }
+
+        std::vector<ENCODE_PACKEDHEADER_DATA> const & GetPps(bool cqmPps = false ) const {
+            (void)cqmPps;
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+            if (cqmPps)
+                return m_packedCqmPps;
+#endif
+            return  m_packedPps;
+        }
 
         std::vector<ENCODE_PACKEDHEADER_DATA> const & GetSlices() const { return m_packedSlices; }
 
@@ -1383,6 +1423,10 @@ namespace MfxHwH264Encode
 
 #ifndef MFX_AVC_ENCODING_UNIT_DISABLE
         void GetHeadersInfo(std::vector<mfxEncodedUnitInfo> &HeadersMap, DdiTask const& task, mfxU32 fid);
+#endif
+
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        mfxU32 GetPackedCqmPpsNum() { return (mfxU32)m_packedCqmPps.size(); }
 #endif
 
     private:
@@ -1426,6 +1470,12 @@ namespace MfxHwH264Encode
 
         static const mfxU32 SPSPPS_BUFFER_SIZE = 1024;
         static const mfxU32 SLICE_BUFFER_SIZE  = 2048;
+
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        std::vector<mfxExtPpsHeader>            m_cqmPps;
+        std::vector<ENCODE_PACKEDHEADER_DATA>   m_packedCqmPps;
+        static const mfxU32 CQM_PPS_NUM = 1;
+#endif
     };
 
     inline mfxU16 LaDSenumToFactor(const mfxU16& LookAheadDS)

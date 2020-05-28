@@ -23,6 +23,42 @@
 
 #include "mfxdefs.h"
 
+#ifndef OPEN_SOURCE
+// disable additional features
+//#define MFX_FADE_DETECTION_FEATURE_DISABLE
+//#define MFX_PRIVATE_AVC_ENCODE_CTRL_DISABLE
+//#define MFX_DEC_VIDEO_POSTPROCESS_DISABLE
+//#define MFX_EXT_BRC_DISABLE
+//#define STRIP_EMBARGO
+//#define MFX_ADAPTIVE_PLAYBACK_DISABLE
+//#define MFX_EXT_DPB_HEVC_DISABLE
+//#define MFX_CAMERA_FEATURE_DISABLE
+//#define MFX_FUTURE_FEATURE_DISABLE
+//#define MFX_AVC_ENCODING_UNIT_DISABLE
+
+#define MFX_EXTBUFF_GPU_HANG_ENABLE
+#define MFX_UNDOCUMENTED_QUANT_MATRIX
+#define MFX_UNDOCUMENTED_DUMP_FILES
+#define MFX_UNDOCUMENTED_VPP_VARIANCE_REPORT
+#define MFX_UNDOCUMENTED_CO_DDI
+//#define MFX_EXTBUFF_FORCE_PRIVATE_DDI_ENABLE
+
+//#define MFX_ENABLE_SVC_VIDEO_DECODE
+#define MFX_ENABLE_VPP_SVC
+#endif // #ifndef OPEN_SOURCE
+
+#if defined(_WIN32) || defined(_WIN64)
+#undef MFX_DEBUG_TOOLS
+#define MFX_DEBUG_TOOLS
+
+#define MFX_ENABLE_LP_LOOKAHEAD
+
+#if defined(DEBUG) || defined(_DEBUG)
+#undef  MFX_DEBUG_TOOLS // to avoid redefinition
+#define MFX_DEBUG_TOOLS
+#endif
+#endif // #if defined(_WIN32) || defined(_WIN64)
+
 #ifdef MFX_VA
     #if defined(LINUX32) || defined(LINUX64)
         #include <va/va_version.h>

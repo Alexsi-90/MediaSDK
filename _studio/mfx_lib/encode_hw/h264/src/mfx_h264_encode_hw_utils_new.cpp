@@ -3197,6 +3197,14 @@ void AsyncRoutineEmulator::Init(MfxVideoParam const & video)
         m_stageGreediness[STG_WAIT_SCD] = IsExtBrcSceneChangeSupported(video) && IsCmNeededForSCD(video) ? 1 + !!(video.AsyncDepth > 1) : 1;
         m_stageGreediness[STG_START_LA    ] = video.mfx.EncodedOrder ? 1 : video.mfx.GopRefDist;
         m_stageGreediness[STG_WAIT_LA     ] = 1;
+#endif
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+        //right now LPLA only supports CBR and VBR mode
+        if (video.mfx.RateControlMethod == MFX_RATECONTROL_CBR|| video.mfx.RateControlMethod == MFX_RATECONTROL_VBR)
+            m_stageGreediness[STG_WAIT_LA] = extOpt2.LookAheadDepth > 0 ? extOpt2.LookAheadDepth : 1;
+        else
+#endif
+        m_stageGreediness[STG_WAIT_LA]      = 1;
         m_stageGreediness[STG_START_HIST  ] = 1;
         m_stageGreediness[STG_WAIT_HIST   ] = 1;
         m_stageGreediness[STG_START_ENCODE] = 1;

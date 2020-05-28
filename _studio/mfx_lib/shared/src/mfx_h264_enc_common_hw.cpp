@@ -2092,6 +2092,15 @@ mfxStatus MfxHwH264Encode::CheckVideoParam(
     sts = CheckVideoParamFEI(par);
     MFX_CHECK(sts >= MFX_ERR_NONE, sts);
 
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+    mfxExtCodingOption2 & extOpt2 = GetExtBufferRef(par);
+    // for game streaming scenario, if option enable lowpower lookahead, check encoder's capability
+    if(IsLpLookaheadSupported(extOpt3.ScenarioInfo, extOpt2.LookAheadDepth, par.mfx.RateControlMethod))
+    {
+        MFX_CHECK(hwCaps.ddi_caps.LookaheadBRCSupport, MFX_ERR_INVALID_VIDEO_PARAM);
+    }
+#endif
+
     return checkSts;
 }
 
@@ -2585,8 +2594,20 @@ mfxStatus MfxHwH264Encode::CheckVideoParamQueryLike(
     {
         if (!bRateControlLA(par.mfx.RateControlMethod))
         {
-            changed = true;
-            extOpt2->LookAheadDepth = 0;
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+            if (extOpt3->ScenarioInfo == MFX_SCENARIO_GAME_STREAMING)
+            {
+                if (!hwCaps.ddi_caps.LookaheadBRCSupport)
+                    unsupported = true;
+            }
+            else
+            {
+#endif
+                changed = true;
+                extOpt2->LookAheadDepth = 0;
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+            }
+#endif
         }
         else if (par.mfx.GopRefDist > 0 && extOpt2->LookAheadDepth < 2 * par.mfx.GopRefDist)
         {
@@ -6318,6 +6339,119 @@ void MfxHwH264Encode::SetDefaults(
             extOpt->IntraPredBlockSize > MFX_BLOCKSIZE_MIN_16X16 : IsOn(extDdi->Transform8x8Mode);
         extPps->picScalingMatrixPresentFlag           = 0;
         extPps->secondChromaQpIndexOffset             = 0;
+
+        if (extBits->PPSBufSize == 0)
+        {
+            extPps->nalRefIdc = par.calcParam.tempScalabilityMode ? 3 : 1;
+            extPps->picParameterSetId = mfxU8(extBits->PPSId);
+            extPps->seqParameterSetId = mfxU8(extBits->SPSId);
+            extPps->entropyCodingModeFlag = IsOff(extOpt->CAVLC);
+            extPps->bottomFieldPicOrderInframePresentFlag = 0;
+            extPps->numSliceGroupsMinus1 = 0;
+            extPps->sliceGroupMapType = 0;
+            extPps->numRefIdxL0DefaultActiveMinus1 = 0;
+            extPps->numRefIdxL1DefaultActiveMinus1 = 0;
+            extPps->weightedPredFlag = mfxU8(extOpt3->WeightedPred == MFX_WEIGHTED_PRED_EXPLICIT);
+            extPps->weightedBipredIdc = extOpt3->WeightedBiPred ? mfxU8(extOpt3->WeightedBiPred - 1) : mfxU8(extDdi->WeightedBiPredIdc);
+            extPps->picInitQpMinus26 = 0;
+            extPps->picInitQsMinus26 = 0;
+            extPps->chromaQpIndexOffset = 0;
+            extPps->deblockingFilterControlPresentFlag = 1;
+            extPps->constrainedIntraPredFlag = 0;
+            extPps->redundantPicCntPresentFlag = 0;
+            extPps->moreRbspData =
+                !IsAvcBaseProfile(par.mfx.CodecProfile) &&
+                par.mfx.CodecProfile != MFX_PROFILE_AVC_MAIN;
+            extPps->transform8x8ModeFlag = extDdi->Transform8x8Mode == MFX_CODINGOPTION_UNKNOWN ?
+                extOpt->IntraPredBlockSize > MFX_BLOCKSIZE_MIN_16X16 : IsOn(extDdi->Transform8x8Mode);
+            extPps->picScalingMatrixPresentFlag = 0;
+            extPps->secondChromaQpIndexOffset = 0;
+        }
+
+#ifdef MFX_ENABLE_AVC_CUSTOM_QMATRIX
+        //We use CQM in case of
+        //MFX_SCENARIO_GAME_STREAMING AVC VDEnc/VME on Gen11+ or
+        //MFX_SCENARIO_REMOTE_GAMING  AVC VDEnc     on Gen9+
+        if (
+#ifndef MFX_ENABLE_LP_LOOKAHEAD
+            (extOpt3->ScenarioInfo == MFX_SCENARIO_GAME_STREAMING && platform >= MFX_HW_ICL) ||
+#endif
+            (extOpt3->ScenarioInfo == MFX_SCENARIO_REMOTE_GAMING  && platform >= MFX_HW_SCL && IsOn(par.mfx.LowPower)))
+        {
+            FillCustomScalingLists(&(extSps->scalingList4x4[0][0]), extOpt3->ScenarioInfo);
+            extSps->seqScalingMatrixPresentFlag = 1;
+            for (mfxU8 i = 0; i < sizeof(extSps->seqScalingListPresentFlag) / sizeof(extSps->seqScalingListPresentFlag[0]); ++i)
+            {
+                extSps->seqScalingListPresentFlag[i] = (i < ((extSps->levelIdc != 3) ? 8 : 12)) ? 1 : 0;
+            }
+        }
+
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        if (extOpt3->ScenarioInfo == MFX_SCENARIO_GAME_STREAMING && hwCaps.ddi_caps.LookaheadBRCSupport)
+        {
+            mfxExtPpsHeader &extCqmPps = par.GetCqmPps();
+
+            extCqmPps = *extPps;
+            extCqmPps.picParameterSetId = 1;
+
+            FillCustomScalingLists(&(extCqmPps.scalingList4x4[0][0]), extOpt3->ScenarioInfo);
+            extCqmPps.picScalingMatrixPresentFlag = 1;
+            for (mfxU8 i = 0; i < sizeof(extCqmPps.picScalingListPresentFlag) / sizeof(extCqmPps.picScalingListPresentFlag[0]); ++i)
+            {
+                extCqmPps.picScalingListPresentFlag[i] = (i < ((extSps->levelIdc != 3) ? 8 : 12)) ? 1 : 0;
+            }
+        }
+#endif
+        // Quantization buffer has higher priority than ScenarioInfo
+        if (extQM)
+        {
+            mfxU8 fillValue = 0;
+            if (extQM->Type == MFX_SCALING_MATRIX_SPS)
+            {
+                extSps->seqScalingMatrixPresentFlag = 1;
+                for (mfxU8 i = 0; i < 8; ++i)
+                {
+                    extSps->seqScalingListPresentFlag[i] = extQM->ScalingListPresent[i] != 0;
+                    if (extSps->seqScalingListPresentFlag[i])
+                    {
+                        if (i < 6)
+                            MakeZigZag<mfxU8>(extQM->ScalingList4x4[i], 4, extSps->scalingList4x4[i], sizeof(extSps->scalingList4x4[i]));
+                        else
+                            MakeZigZag<mfxU8>(extQM->ScalingList8x8[i-6], 8, extSps->scalingList8x8[i-6], sizeof(extSps->scalingList8x8[i-6]));
+                    }
+                    else
+                    {
+                        if (i < 6)
+                            std::fill(std::begin(extQM->ScalingList4x4[i]), std::end(extQM->ScalingList4x4[i]), fillValue);
+                        else
+                            std::fill(std::begin(extQM->ScalingList8x8[i - 6]), std::end(extQM->ScalingList8x8[i - 6]), fillValue);
+                    }
+                }
+            }
+            else if (extQM->Type == MFX_SCALING_MATRIX_PPS && extPps->transform8x8ModeFlag == 1) //supported only if transform8x8ModeFlag is set to 1
+            {
+                extPps->picScalingMatrixPresentFlag = 1;
+                for (mfxU8 i = 0; i < 8; ++i)
+                {
+                    extPps->picScalingListPresentFlag[i] = extQM->ScalingListPresent[i] != 0;
+                    if (extPps->picScalingListPresentFlag[i])
+                    {
+                        if (i < 6)
+                            MakeZigZag<mfxU8>(extQM->ScalingList4x4[i], 4, extPps->scalingList4x4[i], sizeof(extPps->scalingList4x4[i]));
+                        else
+                            MakeZigZag<mfxU8>(extQM->ScalingList8x8[i - 6], 8, extPps->scalingList8x8[i - 6], sizeof(extPps->scalingList8x8[i - 6]));
+                    }
+                    else
+                    {
+                        if (i < 6)
+                            std::fill(std::begin(extQM->ScalingList4x4[i]), std::end(extQM->ScalingList4x4[i]), fillValue);
+                        else
+                            std::fill(std::begin(extQM->ScalingList8x8[i - 6]), std::end(extQM->ScalingList8x8[i - 6]), fillValue);
+                    }
+                }
+            }
+        }
+#endif
     }
 
 #ifndef MFX_AVC_ENCODING_UNIT_DISABLE
@@ -7041,6 +7175,27 @@ mfxExtBuffer* MfxHwH264Encode::GetExtBuffer(mfxExtBuffer** extBuf, mfxU32 numExt
     return 0;
 }
 
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+bool MfxHwH264Encode::IsLpLookaheadSupported(mfxU16 scenario, mfxU16 lookaheadDepth, mfxU16 rateContrlMethod)
+{
+    if (scenario == MFX_SCENARIO_GAME_STREAMING && lookaheadDepth > 0 &&
+        (rateContrlMethod == MFX_RATECONTROL_CBR || rateContrlMethod == MFX_RATECONTROL_VBR))
+        return true;
+    else
+        return false;
+}
+#endif
+
+#if !defined(MFX_PROTECTED_FEATURE_DISABLE)
+mfxEncryptedData* MfxHwH264Encode::GetEncryptedData(mfxBitstream& bs, mfxU32 fieldId)
+{
+    return (fieldId == 0)
+        ? bs.EncryptedData
+        : (bs.EncryptedData)
+            ? bs.EncryptedData->Next
+            : 0;
+}
+#endif
 
 mfxU8 MfxHwH264Encode::ConvertFrameTypeMfx2Ddi(mfxU32 type)
 {
@@ -8950,6 +9105,26 @@ void HeaderPacker::Init(
 
     PrepareSpsPpsHeaders(par, m_sps, m_pps);
 
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+    mfxExtCodingOption3 * extOpt3 = GetExtBuffer(par);
+    if (extOpt3->ScenarioInfo == MFX_SCENARIO_GAME_STREAMING && hwCaps.ddi_caps.LookaheadBRCSupport && extOpt2.LookAheadDepth > 0)
+    {
+        const mfxExtPpsHeader &extCqmPps = par.GetCqmPps();
+        if (m_cqmPps.empty())
+        {
+            m_cqmPps.resize(CQM_PPS_NUM);
+            Zero(m_cqmPps);
+        }
+        if (m_packedCqmPps.empty())
+        {
+            m_packedCqmPps.resize(CQM_PPS_NUM);
+            Zero(m_packedCqmPps);
+        }
+
+        m_cqmPps.back() = extCqmPps;
+    }
+#endif
+
     // prepare data for slice level
     m_needPrefixNalUnit       = (par.calcParam.numTemporalLayer > 0) && (par.mfx.LowPower != MFX_CODINGOPTION_ON);//LowPower limitation for temporal scalability we need to patch bitstream with SVC NAL after encoding
 
@@ -8980,6 +9155,17 @@ void HeaderPacker::Init(
         *bufDesc++ = MakePackedByteBuffer(bufBegin, numBits / 8, m_emulPrev ? 0 : 4);
         bufBegin += numBits / 8;
     }
+
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+    // pack extended pps for adaptive CQM
+    bufDesc = Begin(m_packedCqmPps);
+    for (size_t i = 0; i < m_cqmPps.size(); i++)
+    {
+        numBits = WritePpsHeader(obs, m_cqmPps[i]);
+        *bufDesc++ = MakePackedByteBuffer(bufBegin, numBits / 8, m_emulPrev ? 0 : 4);
+        bufBegin += numBits / 8;
+    }
+#endif
 
     m_hwCaps = hwCaps;
 
@@ -9040,6 +9226,10 @@ ENCODE_PACKEDHEADER_DATA const & HeaderPacker::PackAud(
     mfxU32          fieldId)
 {
     mfxU8 * audBegin = m_packedPps.back().pData + m_packedPps.back().DataLength;
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+    if (!m_packedCqmPps.empty())
+        audBegin += m_packedCqmPps.back().DataLength;
+#endif
 
     OutputBitstream obs(audBegin, End(m_headerBuffer), m_emulPrev);
     mfxU32 numBits = WriteAud(obs, task.m_type[fieldId]);
@@ -9196,7 +9386,11 @@ mfxU32 HeaderPacker::WriteSlice(
     mfxU32 fieldPicFlag = task.GetPicStructForEncode() != MFX_PICSTRUCT_PROGRESSIVE;
 
     mfxExtSpsHeader const & sps = task.m_viewIdx ? m_sps[task.m_viewIdx] : m_sps[m_spsIdx[task.m_did][task.m_qid]];
-    mfxExtPpsHeader const & pps = task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
+    mfxExtPpsHeader const & pps =
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        task.m_cqmHint == CQM_HINT_USE_CUST_MATRIX ? m_cqmPps[0] :
+#endif
+        task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
 
     // if frame_mbs_only_flag = 0 and current task implies encoding of progressive frame
     // then picture height in MBs isn't equal to PicHeightInMapUnits. Multiplier required
@@ -9345,7 +9539,11 @@ mfxU32 HeaderPacker::WriteSlice(
     mfxU32 fieldPicFlag = task.GetPicStructForEncode() != MFX_PICSTRUCT_PROGRESSIVE;
 
     mfxExtSpsHeader const & sps = task.m_viewIdx ? m_sps[task.m_viewIdx] : m_sps[m_spsIdx[task.m_did][task.m_qid]];
-    mfxExtPpsHeader const & pps = task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
+    mfxExtPpsHeader const & pps =
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        task.m_cqmHint == CQM_HINT_USE_CUST_MATRIX ? m_cqmPps[0] :
+#endif
+        task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
 
     // if frame_mbs_only_flag = 0 and current task implies encoding of progressive frame
     // then picture height in MBs isn't equal to PicHeightInMapUnits. Multiplier required
@@ -9572,7 +9770,11 @@ ENCODE_PACKEDHEADER_DATA const & HeaderPacker::PackSkippedSlice(
     WriteSlice(packer, task, fieldId, 0);
 
     mfxExtSpsHeader const & sps = task.m_viewIdx ? m_sps[task.m_viewIdx] : m_sps[m_spsIdx[task.m_did][task.m_qid]];
-    mfxExtPpsHeader const & pps = task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
+    mfxExtPpsHeader const & pps =
+#ifdef MFX_ENABLE_LP_LOOKAHEAD
+        task.m_cqmHint == CQM_HINT_USE_CUST_MATRIX ? m_cqmPps[0] :
+#endif
+        task.m_viewIdx ? m_pps[task.m_viewIdx] : m_pps[m_ppsIdx[task.m_did][task.m_qid]];
 
     mfxU32 picHeightMultiplier = (sps.frameMbsOnlyFlag == 0) && (task.GetPicStructForEncode() == MFX_PICSTRUCT_PROGRESSIVE) ? 2 : 1;
     mfxU32 picHeightInMB       = (sps.picHeightInMapUnitsMinus1 + 1) * picHeightMultiplier;

@@ -864,6 +864,14 @@ void MfxVideoParam::Construct(mfxVideoParam const & par)
     ExtBuffer::Construct(par, m_ext.DisplayColour, m_ext.m_extParam, base.NumExtParam);
     ExtBuffer::Construct(par, m_ext.LightLevel, m_ext.m_extParam, base.NumExtParam);
 #endif
+
+#if defined(MFX_ENABLE_MFE) && defined(PRE_SI_TARGET_PLATFORM_GEN12)
+    ExtBuffer::Construct(par, m_ext.mfeParam, m_ext.m_extParam, base.NumExtParam);
+    ExtBuffer::Construct(par, m_ext.mfeControl, m_ext.m_extParam, base.NumExtParam);
+#endif
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+    ExtBuffer::Construct(par, m_ext.lowpowerLA, m_ext.m_extParam, base.NumExtParam);
+#endif
 }
 
 mfxStatus MfxVideoParam::FillPar(mfxVideoParam& par, bool query)
@@ -2010,6 +2018,23 @@ void MfxVideoParam::SyncMfxToHeadersParam(mfxU32 numSlicesForSTRPSOpt)
         m_pps.extension_flag |= m_pps.range_extension_flag;
     }
 
+#if defined(MFX_ENABLE_HEVCE_SCC)
+    if (mfx.CodecProfile == MFX_PROFILE_HEVC_SCC)
+    {
+        m_pps.curr_pic_ref_enabled_flag = 1;
+        m_pps.scc_extension_flag = 1;
+
+        m_pps.extension_flag |= m_pps.scc_extension_flag;
+        // Disable ref-list modification
+        m_pps.lists_modification_present_flag = 0;
+    }
+#endif
+
+#if defined(MFX_ENABLE_LP_LOOKAHEAD)
+    // need to disable SAO for lowpower lookahead analysis since the alogrithm doesn't support
+    if (m_ext.lowpowerLA.LookAheadDepth > 0)
+        m_sps.sample_adaptive_offset_enabled_flag = 0;
+#endif
 }
 
 mfxU16 FrameType2SliceType(mfxU32 ft)
